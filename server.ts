@@ -1,13 +1,19 @@
 import 'dotenv/config';
-import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { getApp, getApps, initializeApp } from 'firebase-admin/app';
 import { getAuth } from 'firebase-admin/auth';
 import firebaseConfig from './firebase-applet-config.json' with { type: 'json' };
+import {
+  buildObjectKey,
+  encodeObjectKeyPath,
+  extractObjectKeyFromUrl,
+  r2Request,
+  type R2Config,
+} from './r2Signing';
 
-const PORT = 3000;
+const PORT = Number(process.env.PORT) || 3000;
 
 const firebaseAdminApp = getApps().length
   ? getApp()
@@ -19,108 +25,29 @@ interface AuthenticatedRequest extends Request {
   uid?: string;
 }
 
-interface ServerR2Config {
-  accountId: string;
-  accessKeyId: string;
-  secretAccessKey: string;
-  bucketName: string;
-  publicUrl: string;
-}
-
-function getServerR2Config(): ServerR2Config {
-  const accountId = (process.env.VITE_R2_ACCOUNT_ID || process.env.R2_ACCOUNT_ID || '').trim();
-  const accessKeyId = (process.env.VITE_R2_ACCESS_KEY_ID || process.env.R2_ACCESS_KEY_ID || '').trim();
-  const secretAccessKey = (process.env.VITE_R2_SECRET_ACCESS_KEY || process.env.R2_SECRET_ACCESS_KEY || '').trim();
-  const bucketName = (process.env.VITE_R2_BUCKET_NAME || process.env.R2_BUCKET_NAME || 'my-photos').trim() || 'my-photos';
-  const publicUrl = (process.env.VITE_R2_PUBLIC_URL || process.env.R2_PUBLIC_URL || '').trim();
+function getServerR2Config(): R2Config {
+  // Prefer the plain R2_* names so the secret is never a VITE_-prefixed
+  // variable (those are inlined into the client bundle by Vite).
+  const accountId = (process.env.R2_ACCOUNT_ID || process.env.VITE_R2_ACCOUNT_ID || '').trim();
+  const accessKeyId = (process.env.R2_ACCESS_KEY_ID || process.env.VITE_R2_ACCESS_KEY_ID || '').trim();
+  const secretAccessKey = (
+    process.env.R2_SECRET_ACCESS_KEY || process.env.VITE_R2_SECRET_ACCESS_KEY || ''
+  ).trim();
+  const bucketName =
+    (process.env.R2_BUCKET_NAME || process.env.VITE_R2_BUCKET_NAME || 'my-photos').trim() ||
+    'my-photos';
+  const publicUrl = (process.env.R2_PUBLIC_URL || process.env.VITE_R2_PUBLIC_URL || '').trim();
   return { accountId, accessKeyId, secretAccessKey, bucketName, publicUrl };
 }
 
-function getMissingConfigKeys(cfg: ServerR2Config): string[] {
+function getMissingConfigKeys(cfg: R2Config): string[] {
   const missing: string[] = [];
-  if (!cfg.accountId) missing.push('VITE_R2_ACCOUNT_ID');
-  if (!cfg.accessKeyId) missing.push('VITE_R2_ACCESS_KEY_ID');
-  if (!cfg.secretAccessKey) missing.push('VITE_R2_SECRET_ACCESS_KEY');
-  if (!cfg.bucketName) missing.push('VITE_R2_BUCKET_NAME');
-  if (!cfg.publicUrl) missing.push('VITE_R2_PUBLIC_URL');
+  if (!cfg.accountId) missing.push('R2_ACCOUNT_ID');
+  if (!cfg.accessKeyId) missing.push('R2_ACCESS_KEY_ID');
+  if (!cfg.secretAccessKey) missing.push('R2_SECRET_ACCESS_KEY');
+  if (!cfg.bucketName) missing.push('R2_BUCKET_NAME');
+  if (!cfg.publicUrl) missing.push('R2_PUBLIC_URL');
   return missing;
-}
-
-function rfc3986Encode(str: string): string {
-  return encodeURIComponent(str).replace(
-    /[!'()*]/g,
-    (ch) => '%' + ch.charCodeAt(0).toString(16).toUpperCase()
-  );
-}
-
-function encodeObjectKeyPath(key: string): string {
-  return key
-    .split('/')
-    .filter(Boolean)
-    .map((seg) => rfc3986Encode(seg))
-    .join('/');
-}
-
-function sha256Hex(data: Buffer | string): string {
-  return crypto.createHash('sha256').update(data).digest('hex');
-}
-
-function hmacSha256(key: Buffer | string, message: string): Buffer {
-  return crypto.createHmac('sha256', key).update(message).digest();
-}
-
-function getSigningKey(secretAccessKey: string, dateStamp: string): Buffer {
-  const kDate = hmacSha256('AWS4' + secretAccessKey, dateStamp);
-  const kRegion = hmacSha256(kDate, 'auto');
-  const kService = hmacSha256(kRegion, 's3');
-  return hmacSha256(kService, 'aws4_request');
-}
-
-function formatAmzDates(date = new Date()): { amzDate: string; dateStamp: string } {
-  const iso = date.toISOString().replace(/[:-]|\.\d{3}/g, '');
-  return {
-    amzDate: iso,
-    dateStamp: iso.slice(0, 8),
-  };
-}
-
-function buildObjectKey(userId: string, fileName: string): string {
-  const dotIdx = fileName.lastIndexOf('.');
-  const base = dotIdx > 0 ? fileName.slice(0, dotIdx) : fileName;
-  const ext = dotIdx > 0 ? fileName.slice(dotIdx).toLowerCase().replace(/[^a-z0-9.]/g, '') : '';
-  const cleanBase =
-    base
-      .toLowerCase()
-      .replace(/[^a-z0-9_-]+/g, '-')
-      .replace(/^-+|-+$/g, '')
-      .slice(0, 48) || 'media';
-  const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  return `${userId}/${unique}-${cleanBase}${ext}`;
-}
-
-function extractObjectKeyFromUrl(fileUrl: string, cfg: ServerR2Config): string | null {
-  const cleanPublic = cfg.publicUrl.replace(/\/+$/, '');
-  if (cleanPublic && fileUrl.startsWith(cleanPublic + '/')) {
-    const rawKey = fileUrl.slice(cleanPublic.length + 1);
-    return rawKey
-      .split('/')
-      .map((s) => decodeURIComponent(s))
-      .join('/');
-  }
-  try {
-    const parsed = new URL(fileUrl);
-    let keyPath = parsed.pathname.replace(/^\/+/, '');
-    if (keyPath.startsWith(`${cfg.bucketName}/`)) {
-      keyPath = keyPath.slice(cfg.bucketName.length + 1);
-    }
-    return keyPath
-      .split('/')
-      .filter(Boolean)
-      .map((s) => decodeURIComponent(s))
-      .join('/');
-  } catch {
-    return null;
-  }
 }
 
 async function requireFirebaseUser(
@@ -139,13 +66,18 @@ async function requireFirebaseUser(
     const decoded = await adminAuth.verifyIdToken(token);
     req.uid = decoded.uid;
     next();
-  } catch {
+  } catch (err) {
+    console.error('[auth] verifyIdToken failed:', err instanceof Error ? err.message : err);
     res.status(401).json({ error: 'Unauthorized: Invalid auth token' });
   }
 }
 
 async function startServer() {
   const app = express();
+
+  app.get('/api/health', (_req: Request, res: Response) => {
+    res.json({ ok: true });
+  });
 
   app.get('/api/r2/status', (_req: Request, res: Response) => {
     const cfg = getServerR2Config();
@@ -178,7 +110,9 @@ async function startServer() {
         }
 
         const rawName = String(req.query.fileName || 'media');
-        const contentType = String(req.query.fileType || req.headers['content-type'] || 'application/octet-stream');
+        const contentType = String(
+          req.query.fileType || req.headers['content-type'] || 'application/octet-stream'
+        );
         const bodyBuffer = Buffer.isBuffer(req.body) ? req.body : Buffer.from(req.body ?? '');
 
         if (bodyBuffer.length === 0) {
@@ -187,68 +121,24 @@ async function startServer() {
         }
 
         const objectKey = buildObjectKey(uid, rawName);
-        const host = `${cfg.accountId}.r2.cloudflarestorage.com`;
-        const encodedKey = encodeObjectKeyPath(objectKey);
-        const canonicalUri = `/${rfc3986Encode(cfg.bucketName)}/${encodedKey}`;
-        const { amzDate, dateStamp } = formatAmzDates();
-        const credentialScope = `${dateStamp}/auto/s3/aws4_request`;
-        const payloadHash = sha256Hex(bodyBuffer);
-
-        const canonicalHeaders =
-          `host:${host}\n` +
-          `x-amz-content-sha256:${payloadHash}\n` +
-          `x-amz-date:${amzDate}\n`;
-        const signedHeaders = 'host;x-amz-content-sha256;x-amz-date';
-
-        const canonicalRequest = [
-          'PUT',
-          canonicalUri,
-          '',
-          canonicalHeaders,
-          signedHeaders,
-          payloadHash,
-        ].join('\n');
-
-        const stringToSign = [
-          'AWS4-HMAC-SHA256',
-          amzDate,
-          credentialScope,
-          sha256Hex(canonicalRequest),
-        ].join('\n');
-
-        const signingKey = getSigningKey(cfg.secretAccessKey, dateStamp);
-        const signature = crypto
-          .createHmac('sha256', signingKey)
-          .update(stringToSign)
-          .digest('hex');
-
-        const authorization =
-          `AWS4-HMAC-SHA256 Credential=${cfg.accessKeyId}/${credentialScope}, ` +
-          `SignedHeaders=${signedHeaders}, Signature=${signature}`;
-
-        const r2Res = await fetch(`https://${host}${canonicalUri}`, {
-          method: 'PUT',
-          headers: {
-            'Content-Type': contentType,
-            'x-amz-content-sha256': payloadHash,
-            'x-amz-date': amzDate,
-            Authorization: authorization,
-          },
-          body: new Uint8Array(bodyBuffer),
-        });
+        const r2Res = await r2Request(cfg, 'PUT', objectKey, bodyBuffer, contentType);
 
         if (!r2Res.ok) {
           const errText = await r2Res.text().catch(() => '');
+          console.error(`[r2] upload failed ${r2Res.status}: ${errText.slice(0, 300)}`);
           res.status(502).json({
-            error: `Cloudflare R2 upload failed (${r2Res.status})${errText ? ': ' + errText.slice(0, 160) : ''}`,
+            error: `Cloudflare R2 upload failed (${r2Res.status})${
+              errText ? ': ' + errText.slice(0, 160) : ''
+            }`,
           });
           return;
         }
 
         const basePublic = cfg.publicUrl.replace(/\/+$/, '');
-        const publicUrl = `${basePublic}/${encodedKey}`;
+        const publicUrl = `${basePublic}/${encodeObjectKeyPath(objectKey)}`;
         res.json({ publicUrl, objectKey });
       } catch (err) {
+        console.error('[r2] upload error:', err);
         res.status(500).json({
           error: err instanceof Error ? err.message : 'Server upload failed',
         });
@@ -284,61 +174,18 @@ async function startServer() {
           return;
         }
 
-        const host = `${cfg.accountId}.r2.cloudflarestorage.com`;
-        const encodedKey = encodeObjectKeyPath(objectKey);
-        const canonicalUri = `/${rfc3986Encode(cfg.bucketName)}/${encodedKey}`;
-        const { amzDate, dateStamp } = formatAmzDates();
-        const credentialScope = `${dateStamp}/auto/s3/aws4_request`;
-        const payloadHash = 'UNSIGNED-PAYLOAD';
-
-        const canonicalHeaders =
-          `host:${host}\n` +
-          `x-amz-content-sha256:${payloadHash}\n` +
-          `x-amz-date:${amzDate}\n`;
-        const signedHeaders = 'host;x-amz-content-sha256;x-amz-date';
-
-        const canonicalRequest = [
-          'DELETE',
-          canonicalUri,
-          '',
-          canonicalHeaders,
-          signedHeaders,
-          payloadHash,
-        ].join('\n');
-
-        const stringToSign = [
-          'AWS4-HMAC-SHA256',
-          amzDate,
-          credentialScope,
-          sha256Hex(canonicalRequest),
-        ].join('\n');
-
-        const signingKey = getSigningKey(cfg.secretAccessKey, dateStamp);
-        const signature = crypto
-          .createHmac('sha256', signingKey)
-          .update(stringToSign)
-          .digest('hex');
-
-        const authorization =
-          `AWS4-HMAC-SHA256 Credential=${cfg.accessKeyId}/${credentialScope}, ` +
-          `SignedHeaders=${signedHeaders}, Signature=${signature}`;
-
-        const r2Res = await fetch(`https://${host}${canonicalUri}`, {
-          method: 'DELETE',
-          headers: {
-            'x-amz-content-sha256': payloadHash,
-            'x-amz-date': amzDate,
-            Authorization: authorization,
-          },
-        });
+        const r2Res = await r2Request(cfg, 'DELETE', objectKey);
 
         if (!r2Res.ok && r2Res.status !== 204 && r2Res.status !== 404) {
+          const errText = await r2Res.text().catch(() => '');
+          console.error(`[r2] delete failed ${r2Res.status}: ${errText.slice(0, 300)}`);
           res.status(502).json({ error: `R2 delete failed (${r2Res.status})` });
           return;
         }
 
         res.json({ ok: true });
       } catch (err) {
+        console.error('[r2] delete error:', err);
         res.status(500).json({
           error: err instanceof Error ? err.message : 'Server delete failed',
         });
@@ -349,7 +196,7 @@ async function startServer() {
   if (process.env.NODE_ENV === 'production') {
     const distDir = path.resolve(process.cwd(), 'dist');
     app.use(express.static(distDir));
-    app.get('*all', (_req, res) => {
+    app.get('*', (_req, res) => {
       res.sendFile(path.join(distDir, 'index.html'));
     });
   } else {
@@ -360,7 +207,7 @@ async function startServer() {
     });
     app.use(vite.middlewares);
 
-    app.use('*all', async (req, res, next) => {
+    app.use('*', async (req, res, next) => {
       try {
         const htmlPath = path.resolve(process.cwd(), 'index.html');
         let html = fs.readFileSync(htmlPath, 'utf-8');
@@ -374,6 +221,16 @@ async function startServer() {
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`Server listening on http://0.0.0.0:${PORT}`);
+    const missing = getMissingConfigKeys(getServerR2Config());
+    if (missing.length > 0) {
+      console.warn(
+        `[storage] Cloudflare R2 is NOT configured. Uploads will fail with 503.\n` +
+          `[storage] Missing: ${missing.join(', ')}\n` +
+          `[storage] Set these in .env (see .env.example) and restart.`
+      );
+    } else {
+      console.log('[storage] Cloudflare R2 configuration detected.');
+    }
   });
 }
 

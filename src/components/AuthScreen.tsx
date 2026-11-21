@@ -1,14 +1,28 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { signInWithPopup } from 'firebase/auth';
 import { Loader2 } from 'lucide-react';
 import { auth, googleProvider } from '../lib/firebase';
-import { getMissingR2Keys } from '../lib/r2';
+import { fetchR2Status } from '../lib/r2';
 
 export const AuthScreen: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const missingR2Keys = getMissingR2Keys();
+  const [missingR2Keys, setMissingR2Keys] = useState<string[]>([]);
+
+  useEffect(() => {
+    let active = true;
+    fetchR2Status()
+      .then((status) => {
+        if (active && !status.configured) {
+          setMissingR2Keys(status.missing);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const handleGoogleSignIn = async () => {
     setError(null);
@@ -43,7 +57,7 @@ export const AuthScreen: React.FC = () => {
               <code className="font-mono text-zinc-200">.env</code> file to enable direct media uploads to your R2 bucket:
             </p>
             <ul className="text-xs font-mono text-zinc-300 space-y-1 pt-1">
-              {missingR2Keys.map((key) => (
+              {missingR2Keys.map((key: string) => (
                 <li key={key}>{key}</li>
               ))}
             </ul>
