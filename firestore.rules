@@ -1,0 +1,134 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global safety net: deny all reads and writes by default
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isVerifiedUser() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidPhoto(data, userId) {
+      return data.keys().hasAll([
+          'user_id',
+          'file_name',
+          'file_type',
+          'file_url',
+          'file_size',
+          'is_favorite',
+          'album',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'user_id',
+          'file_name',
+          'file_type',
+          'file_url',
+          'file_size',
+          'is_favorite',
+          'album',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.user_id is string
+        && data.user_id == userId
+        && data.user_id == request.auth.uid
+        && isValidId(data.user_id)
+        && data.file_name is string
+        && data.file_name.size() >= 1
+        && data.file_name.size() <= 255
+        && data.file_type is string
+        && data.file_type.size() >= 1
+        && data.file_type.size() <= 128
+        && data.file_url is string
+        && data.file_url.size() >= 8
+        && data.file_url.size() <= 2048
+        && data.file_size is number
+        && data.file_size >= 0
+        && data.file_size <= 10737418240
+        && data.is_favorite is bool
+        && (data.album == null || (data.album is string && data.album.size() <= 120))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidAlbum(data, userId) {
+      return data.keys().hasAll(['user_id', 'name', 'createdAt'])
+        && data.keys().hasOnly(['user_id', 'name', 'createdAt'])
+        && data.user_id is string
+        && data.user_id == userId
+        && data.user_id == request.auth.uid
+        && isValidId(data.user_id)
+        && data.name is string
+        && data.name.size() >= 1
+        && data.name.size() <= 100
+        && data.createdAt is timestamp;
+    }
+
+    match /users/{userId}/photos/{photoId} {
+      allow get: if isOwner(userId) && isValidId(photoId) && existing().user_id == request.auth.uid;
+      allow list: if isOwner(userId) && existing().user_id == request.auth.uid;
+
+      allow create: if isOwner(userId)
+        && isValidId(photoId)
+        && isValidPhoto(incoming(), userId)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isOwner(userId)
+        && isValidId(photoId)
+        && isValidPhoto(incoming(), userId)
+        && incoming().user_id == existing().user_id
+        && incoming().file_name == existing().file_name
+        && incoming().file_type == existing().file_type
+        && incoming().file_url == existing().file_url
+        && incoming().file_size == existing().file_size
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          // Action: Toggle favorite
+          incoming().diff(existing()).affectedKeys().hasOnly(['is_favorite', 'updatedAt']) ||
+          // Action: Move to album or trash / restore
+          incoming().diff(existing()).affectedKeys().hasOnly(['album', 'updatedAt'])
+        );
+
+      allow delete: if isOwner(userId) && isValidId(photoId) && existing().user_id == request.auth.uid;
+    }
+
+    match /users/{userId}/albums/{albumId} {
+      allow get: if isOwner(userId) && isValidId(albumId) && existing().user_id == request.auth.uid;
+      allow list: if isOwner(userId) && existing().user_id == request.auth.uid;
+
+      allow create: if isOwner(userId)
+        && isValidId(albumId)
+        && isValidAlbum(incoming(), userId)
+        && incoming().createdAt == request.time;
+
+      allow delete: if isOwner(userId) && isValidId(albumId) && existing().user_id == request.auth.uid;
+    }
+  }
+}

@@ -1,0 +1,106 @@
+{
+  "entities": {
+    "Photo": {
+      "title": "Photo",
+      "description": "Metadata for a user's photo or video stored in Cloudflare R2.",
+      "type": "object",
+      "properties": {
+        "user_id": {
+          "type": "string",
+          "description": "Owner Firebase Auth UID.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "file_name": {
+          "type": "string",
+          "description": "Original filename of the photo or video.",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "file_type": {
+          "type": "string",
+          "description": "MIME type of the media file (image/* or video/*).",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "file_url": {
+          "type": "string",
+          "description": "Public Cloudflare R2 URL for the uploaded media object.",
+          "minLength": 8,
+          "maxLength": 2048
+        },
+        "file_size": {
+          "type": "number",
+          "description": "Size of the uploaded media object in bytes."
+        },
+        "is_favorite": {
+          "type": "boolean",
+          "description": "Whether the user starred this media item."
+        },
+        "album": {
+          "type": "string",
+          "description": "Album name or trash marker (__trash__ or __trash__::<album>).",
+          "maxLength": 120
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the media record was created."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the media record was last modified."
+        }
+      },
+      "required": [
+        "user_id",
+        "file_name",
+        "file_type",
+        "file_url",
+        "file_size",
+        "is_favorite",
+        "album",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "Album": {
+      "title": "Album",
+      "description": "User-created album metadata synced across devices.",
+      "type": "object",
+      "properties": {
+        "user_id": {
+          "type": "string",
+          "description": "Owner Firebase Auth UID.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "name": {
+          "type": "string",
+          "description": "Display name of the album.",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the album was created."
+        }
+      },
+      "required": ["user_id", "name", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}/photos/{photoId}": {
+      "schema": { "$ref": "#/entities/Photo" },
+      "description": "Private photo and video metadata documents owned by a single authenticated user."
+    },
+    "/users/{userId}/albums/{albumId}": {
+      "schema": { "$ref": "#/entities/Album" },
+      "description": "Private album definitions owned by a single authenticated user."
+    }
+  }
+}

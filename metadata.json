@@ -1,0 +1,6 @@
+{
+  "name": "My Photos",
+  "description": "Private cloud photo and video gallery powered by Firebase Firestore and Cloudflare R2.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
