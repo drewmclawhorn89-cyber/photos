@@ -349,7 +349,7 @@ async function startServer() {
   if (process.env.NODE_ENV === 'production') {
     const distDir = path.resolve(process.cwd(), 'dist');
     app.use(express.static(distDir));
-    app.get('*all', (_req, res) => {
+    app.get('*', (_req, res) => {
       res.sendFile(path.join(distDir, 'index.html'));
     });
   } else {
@@ -360,7 +360,7 @@ async function startServer() {
     });
     app.use(vite.middlewares);
 
-    app.use('*all', async (req, res, next) => {
+    app.use('*', async (req, res, next) => {
       try {
         const htmlPath = path.resolve(process.cwd(), 'index.html');
         let html = fs.readFileSync(htmlPath, 'utf-8');

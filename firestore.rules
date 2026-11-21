@@ -91,7 +91,7 @@ service cloud.firestore {
 
     match /users/{userId}/photos/{photoId} {
       allow get: if isOwner(userId) && isValidId(photoId) && existing().user_id == request.auth.uid;
-      allow list: if isOwner(userId) && existing().user_id == request.auth.uid;
+      allow list: if isOwner(userId);
 
       allow create: if isOwner(userId)
         && isValidId(photoId)
@@ -121,7 +121,7 @@ service cloud.firestore {
 
     match /users/{userId}/albums/{albumId} {
       allow get: if isOwner(userId) && isValidId(albumId) && existing().user_id == request.auth.uid;
-      allow list: if isOwner(userId) && existing().user_id == request.auth.uid;
+      allow list: if isOwner(userId);
 
       allow create: if isOwner(userId)
         && isValidId(albumId)
